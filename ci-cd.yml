@@ -1,0 +1,81 @@
+name: CI/CD Pipeline
+
+# Триггеры для запуска workflow
+on:
+  push:
+    branches: [ "main", "master" ] # Запускает тесты при пуше в основную ветку
+    tags: [ 'v*' ]                 # Запускает публикацию при создании тега (например, v1, v1.0.0)
+  pull_request:
+    branches: [ "main", "master" ] # Запускает тесты при создании PR
+
+env:
+  # Используем Docker Hub
+  REGISTRY: docker.io
+  # Имя образа берем из названия репозитория (например, username/tracker-app)
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ==========================================
+  # JOB 1: Проверка кода и запуск тестов
+  # ==========================================
+  test-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout кода
+        uses: actions/checkout@v4
+
+      - name: Установка Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22' # Укажите вашу версию Go
+          cache: true
+
+      - name: Загрузка зависимостей
+        run: go mod download
+
+      - name: Проверка кода на ошибки (go vet)
+        run: go vet ./...
+
+      - name: Запуск тестов
+        run: go test -v ./...
+
+  # ==========================================
+  # JOB 2: Сборка и публикация в Docker Hub
+  # ==========================================
+  build-and-publish:
+    runs-on: ubuntu-latest
+    # Этот job запустится ТОЛЬКО если job test-and-lint завершился успешно
+    needs: test-and-lint
+    # Запускаем этот job только если был создан тег
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout кода
+        uses: actions/checkout@v4
+
+      - name: Настройка Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Вход в Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Извлечение метаданных (теги, лейблы) для Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Автоматически создаст тег, совпадающий с именем git-тега (например, v1)
+          tags: |
+            type=ref,event=tag
+
+      - name: Сборка и отправка (push) Docker образа
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
